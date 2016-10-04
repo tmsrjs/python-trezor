@@ -80,8 +80,7 @@ class Transport(object):
         if msg_type == 'protobuf':
             return data
         else:
-            inst = mapping.get_class(msg_type)()
-            inst.ParseFromString(bytes(data))
+            inst = mapping.get_class(msg_type).loads(bytes(data))
             return inst
 
     # Functions to be implemented in specific transports:
@@ -111,7 +110,7 @@ class Transport(object):
 
 class TransportV1(Transport):
     def write(self, msg):
-        ser = msg.SerializeToString()
+        ser = msg.dumps()
         header = struct.pack(">HL", mapping.get_type(msg), len(ser))
         data = bytearray(b"##" + header + ser)
 
@@ -154,7 +153,7 @@ class TransportV1(Transport):
 
 class TransportV2(Transport):
     def write(self, msg):
-        data = bytearray(msg.SerializeToString())
+        data = bytearray(msg.dumps())
 
         # Convert to unsigned in python2
         checksum = binascii.crc32(data) & 0xffffffff

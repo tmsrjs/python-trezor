@@ -1,7 +1,11 @@
 from __future__ import print_function
 
-from . import messages_pb2 as proto
-from .transport import NotImplementedException
+from messages.DebugLinkGetState import DebugLinkGetState
+from messages.DebugLinkDecision import DebugLinkDecision
+from messages.DebugLinkStop import DebugLinkStop
+from messages.DebugLinkMemoryRead import DebugLinkMemoryRead
+from messages.DebugLinkMemoryWrite import DebugLinkMemoryWrite
+from messages.DebugLinkFlashErase import DebugLinkFlashErase
 
 def pin_info(pin):
     print("Device asks for PIN %s" % pin)
@@ -10,7 +14,8 @@ def button_press(yes_no):
     print("User pressed", '"y"' if yes_no else '"n"')
 
 def pprint(msg):
-    return "<%s> (%d bytes):\n%s" % (msg.__class__.__name__, msg.ByteSize(), msg)
+    #return "<%s> (%d bytes):\n%s" % (msg.__class__.__name__, msg.ByteSize(), msg)
+    return "<%s> (%d bytes):\n%s" % (msg.message_type._name, len(msg.dumps()), msg)
 
 class DebugLink(object):
     def __init__(self, transport, pin_func=pin_info, button_func=button_press):
@@ -32,7 +37,7 @@ class DebugLink(object):
         return ret
 
     def read_pin(self):
-        obj = self._call(proto.DebugLinkGetState())
+        obj = self._call(DebugLinkGetState())
         print("Read PIN:", obj.pin)
         print("Read matrix:", obj.matrix)
 
@@ -57,37 +62,37 @@ class DebugLink(object):
         return pin_encoded
 
     def read_layout(self):
-        obj = self._call(proto.DebugLinkGetState())
+        obj = self._call(DebugLinkGetState())
         return obj.layout
 
     def read_mnemonic(self):
-        obj = self._call(proto.DebugLinkGetState())
+        obj = self._call(DebugLinkGetState())
         return obj.mnemonic
 
     def read_node(self):
-        obj = self._call(proto.DebugLinkGetState())
+        obj = self._call(DebugLinkGetState())
         return obj.node
 
     def read_recovery_word(self):
-        obj = self._call(proto.DebugLinkGetState())
+        obj = self._call(DebugLinkGetState())
         return (obj.recovery_fake_word, obj.recovery_word_pos)
 
     def read_reset_word(self):
-        obj = self._call(proto.DebugLinkGetState())
+        obj = self._call(DebugLinkGetState())
         return obj.reset_word
 
     def read_reset_entropy(self):
-        obj = self._call(proto.DebugLinkGetState())
+        obj = self._call(DebugLinkGetState())
         return obj.reset_entropy
 
     def read_passphrase_protection(self):
-        obj = self._call(proto.DebugLinkGetState())
+        obj = self._call(DebugLinkGetState())
         return obj.passphrase_protection
 
     def press_button(self, yes_no):
         print("Pressing", yes_no)
         self.button_func(yes_no)
-        self._call(proto.DebugLinkDecision(yes_no=yes_no), nowait=True)
+        self._call(DebugLinkDecision(yes_no=yes_no), nowait=True)
 
     def press_yes(self):
         self.press_button(True)
@@ -96,14 +101,14 @@ class DebugLink(object):
         self.press_button(False)
 
     def stop(self):
-        self._call(proto.DebugLinkStop(), nowait=True)
+        self._call(DebugLinkStop(), nowait=True)
 
     def memory_read(self, address, length):
-        obj = self._call(proto.DebugLinkMemoryRead(address=address, length=length))
+        obj = self._call(DebugLinkMemoryRead(address=address, length=length))
         return obj.memory
 
     def memory_write(self, address, memory, flash=False):
-        self._call(proto.DebugLinkMemoryWrite(address=address, memory=memory, flash=flash), nowait=True)
+        self._call(DebugLinkMemoryWrite(address=address, memory=memory, flash=flash), nowait=True)
 
     def flash_erase(self, sector):
-        obj = self._call(proto.DebugLinkFlashErase(sector=sector), nowait=True)
+        obj = self._call(DebugLinkFlashErase(sector=sector), nowait=True)

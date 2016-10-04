@@ -13,9 +13,12 @@ from mnemonic import Mnemonic
 
 from . import tools
 from . import mapping
-from . import messages_pb2 as proto
-from . import types_pb2 as types
 from .debuglink import DebugLink
+
+from trezorlib.messages.HDNodeType import HDNodeType
+from trezorlib.messages import FailureType
+from trezorlib.messages import RequestType
+from trezorlib.messages import ButtonRequestType
 
 # try:
 #     from PIL import Image
@@ -27,22 +30,19 @@ SCREENSHOT = False
 
 DEFAULT_CURVE = 'secp256k1'
 
-# monkeypatching: text formatting of protobuf messages
-tools.monkeypatch_google_protobuf_text_format()
-
 def get_buttonrequest_value(code):
     # Converts integer code to its string representation of ButtonRequestType
-    return [ k for k, v in types.ButtonRequestType.items() if v == code][0]
+    return [ k for k, v in ButtonRequestType.__dict__.items() if v == code][0]
 
 def pprint(msg):
-    msg_class = msg.__class__.__name__
-    msg_size = msg.ByteSize()
+    msg_class = msg.message_type._name
+    msg_size = len(msg.dumps())
     """
     msg_ser = msg.SerializeToString()
     msg_id = mapping.get_type(msg)
     msg_json = json.dumps(protobuf_json.pb2json(msg))
     """
-    if isinstance(msg, proto.FirmwareUpload):
+    if msg == mapping.get_class('FirmwareUpload'):
         return "<%s> (%d bytes):\n" % (msg_class, msg_size)
     else:
         return "<%s> (%d bytes):\n%s" % (msg_class, msg_size, msg)
@@ -69,7 +69,8 @@ class field(object):
     def __call__(self, f):
         def wrapped_f(*args, **kwargs):
             ret = f(*args, **kwargs)
-            ret.HasField(self.field)
+            if self.field not in ret.__dict__:
+                raise Exception("Field %s not set in message" % self.field)
             return getattr(ret, self.field)
         return wrapped_f
 
@@ -78,13 +79,14 @@ class expect(object):
     # returned one of expected protobuf messages
     # or raises an exception
     def __init__(self, *expected):
-        self.expected = expected
+        # Convert wire type (int), message name (string) or message class (class) to class
+        self.expected = [ mapping.get_class(x) for x in expected ]
 
     def __call__(self, f):
         def wrapped_f(*args, **kwargs):
             ret = f(*args, **kwargs)
-            if not isinstance(ret, self.expected):
-                raise Exception("Got %s, expected %s" % (ret.__class__, self.expected))
+            if not ret.message_type in self.expected:
+                raise Exception("Got %s, expected %s" % (ret.message_type, self.expected))
             return ret
         return wrapped_f
 
@@ -122,7 +124,7 @@ class BaseClient(object):
         super(BaseClient, self).__init__()  # *args, **kwargs)
 
     def cancel(self):
-        self.transport.write(proto.Cancel())
+        self.transport.write(mapping.get_class('Cancel')())
 
     @session
     def call_raw(self, msg):
@@ -132,7 +134,7 @@ class BaseClient(object):
     @session
     def call(self, msg):
         resp = self.call_raw(msg)
-        handler_name = "callback_%s" % resp.__class__.__name__
+        handler_name = "callback_%s" % resp.message_type._name
         handler = getattr(self, handler_name, None)
 
         if handler != None:
@@ -144,8 +146,8 @@ class BaseClient(object):
         return resp
 
     def callback_Failure(self, msg):
-        if msg.code in (types.Failure_PinInvalid,
-            types.Failure_PinCancelled, types.Failure_PinExpected):
+        if msg.code in (FailureType.PinInvalid,
+            FailureType.PinCancelled, FailureType.PinExpected):
             raise PinException(msg.code, msg.message)
 
         raise CallException(msg.code, msg.message)
@@ -172,7 +174,7 @@ class TextUIMixin(object):
 
     def callback_ButtonRequest(self, msg):
         # log("Sending ButtonAck for %s " % get_buttonrequest_value(msg.code))
-        return proto.ButtonAck()
+        return mapping.get_class('ButtonAck')()
 
     def callback_PinMatrixRequest(self, msg):
         if msg.type == 1:
@@ -190,7 +192,7 @@ class TextUIMixin(object):
         log("    1 2 3")
         log("Please enter %s: " % desc)
         pin = getpass.getpass('')
-        return proto.PinMatrixAck(pin=pin)
+        return mapping.get_class('PinMatrixAck')(pin=pin)
 
     def callback_PassphraseRequest(self, msg):
         log("Passphrase required: ")
@@ -198,7 +200,7 @@ class TextUIMixin(object):
         log("Confirm your Passphrase: ")
         if passphrase == getpass.getpass(''):
             passphrase = normalize_nfc(passphrase)
-            return proto.PassphraseAck(passphrase=passphrase)
+            return mapping.get_class('PassphraseAck')(passphrase=passphrase)
         else:
             log("Passphrase did not match! ")
             exit()
@@ -209,7 +211,7 @@ class TextUIMixin(object):
             word = raw_input()
         except NameError:
             word = input() # Python 3
-        return proto.WordAck(word=word)
+        return mapping.get_class('WordAck')(word=word)
 
 class DebugLinkMixin(object):
     # This class implements automatic responses
@@ -309,17 +311,16 @@ class DebugLinkMixin(object):
             try:
                 expected = self.expected_responses.pop(0)
             except IndexError:
-                raise CallException(types.Failure_Other,
+                raise CallException(FailureType.Other,
                         "Got %s, but no message has been expected" % pprint(msg))
 
             if msg.__class__ != expected.__class__:
-                raise CallException(types.Failure_Other,
+                raise CallException(FailureType.Other,
                             "Expected %s, got %s" % (pprint(expected), pprint(msg)))
 
-            fields = expected.ListFields()  # only filled (including extensions)
-            for field, value in fields:
-                if not msg.HasField(field.name) or getattr(msg, field.name) != value:
-                    raise CallException(types.Failure_Other,
+            for field, value in expected.__dict__.items():  # only filled
+                if field not in msg.__dict__ or msg.__dict__.get(field) != value:
+                    raise CallException(FailureType.Other,
                             "Expected %s, got %s" % (pprint(expected), pprint(msg)))
 
     def callback_ButtonRequest(self, msg):
@@ -330,25 +331,25 @@ class DebugLinkMixin(object):
             log("Waiting %d seconds " % self.button_wait)
             time.sleep(self.button_wait)
         self.debug.press_button(self.button)
-        return proto.ButtonAck()
+        return mapping.get_class('ButtonAck')()
 
     def callback_PinMatrixRequest(self, msg):
         if self.pin_correct:
             pin = self.debug.read_pin_encoded()
         else:
             pin = '444222'
-        return proto.PinMatrixAck(pin=pin)
+        return mapping.get_class('PinMatrixAck')(pin=pin)
 
     def callback_PassphraseRequest(self, msg):
         log("Provided passphrase: '%s'" % self.passphrase)
-        return proto.PassphraseAck(passphrase=self.passphrase)
+        return mapping.get_class('PassphraseAck')(passphrase=self.passphrase)
 
     def callback_WordRequest(self, msg):
         (word, pos) = self.debug.read_recovery_word()
         if word != '':
-            return proto.WordAck(word=word)
+            return mapping.get_class('WordAck')(word=word)
         if pos != 0:
-            return proto.WordAck(word=self.mnemonic[pos - 1])
+            return mapping.get_class('WordAck')(word=self.mnemonic[pos - 1])
 
         raise Exception("Unexpected call")
 
@@ -365,7 +366,7 @@ class ProtocolMixin(object):
         self.tx_api = tx_api
 
     def init_device(self):
-        self.features = expect(proto.Features)(self.call)(proto.Initialize())
+        self.features = expect('Features')(self.call)(mapping.get_class('Initialize')())
         if str(self.features.vendor) not in self.VENDORS:
             raise Exception("Unsupported device")
 
@@ -402,7 +403,7 @@ class ProtocolMixin(object):
 
         return path
 
-    @expect(proto.PublicKey)
+    @expect('PublicKey')
     def get_public_node(self, n, ecdsa_curve_name=DEFAULT_CURVE, show_display=False):
         n = self._convert_prime(n)
         if not ecdsa_curve_name:
@@ -410,19 +411,19 @@ class ProtocolMixin(object):
         return self.call(proto.GetPublicKey(address_n=n, ecdsa_curve_name=ecdsa_curve_name, show_display=show_display))
 
     @field('address')
-    @expect(proto.Address)
+    @expect('Address')
     def get_address(self, coin_name, n, show_display=False, multisig=None):
         n = self._convert_prime(n)
         if multisig:
-            return self.call(proto.GetAddress(address_n=n, coin_name=coin_name, show_display=show_display, multisig=multisig))
+            return self.call(mapping.get_class('GetAddress')(address_n=n, coin_name=coin_name, show_display=show_display, multisig=multisig))
         else:
-            return self.call(proto.GetAddress(address_n=n, coin_name=coin_name, show_display=show_display))
+            return self.call(mapping.get_class('GetAddress')(address_n=n, coin_name=coin_name, show_display=show_display))
 
     @field('address')
-    @expect(proto.EthereumAddress)
+    @expect('EthereumAddress')
     def ethereum_get_address(self, n, show_display=False, multisig=None):
         n = self._convert_prime(n)
-        return self.call(proto.EthereumGetAddress(address_n=n, show_display=show_display))
+        return self.call(mapping.get_class('EthereumGetAddress')(address_n=n, show_display=show_display))
 
     @session
     def ethereum_sign_tx(self, n, nonce, gas_price, gas_limit, to, value, data=None):
@@ -434,7 +435,7 @@ class ProtocolMixin(object):
 
         n = self._convert_prime(n)
 
-        msg = proto.EthereumSignTx(
+        msg = mapping.get_class('EthereumSignTx')(
             address_n=n,
             nonce=int_to_big_endian(nonce),
             gas_price=int_to_big_endian(gas_price),
@@ -454,20 +455,20 @@ class ProtocolMixin(object):
         while response.HasField('data_length'):
             data_length = response.data_length
             data, chunk = data[data_length:], data[:data_length]
-            response = self.call(proto.EthereumTxAck(data_chunk=chunk))
+            response = self.call(mapping.get_class('EthereumTxAck')(data_chunk=chunk))
 
         return response.signature_v, response.signature_r, response.signature_s
 
 
     @field('entropy')
-    @expect(proto.Entropy)
+    @expect('Entropy')
     def get_entropy(self, size):
-        return self.call(proto.GetEntropy(size=size))
+        return self.call(mapping.get_class('GetEntropy')(size=size))
 
     @field('message')
-    @expect(proto.Success)
+    @expect('Success')
     def ping(self, msg, button_protection=False, pin_protection=False, passphrase_protection=False):
-        msg = proto.Ping(message=msg,
+        msg = mapping.get_class('Ping')(message=msg,
                          button_protection=button_protection,
                          pin_protection=pin_protection,
                          passphrase_protection=passphrase_protection)
@@ -477,9 +478,9 @@ class ProtocolMixin(object):
         return self.features.device_id
 
     @field('message')
-    @expect(proto.Success)
+    @expect('Success')
     def apply_settings(self, label=None, language=None, use_passphrase=None, homescreen=None):
-        settings = proto.ApplySettings()
+        settings = mapping.get_class('ApplySettings')()
         if label != None:
             settings.label = label
         if language:
@@ -494,36 +495,36 @@ class ProtocolMixin(object):
         return out
 
     @field('message')
-    @expect(proto.Success)
+    @expect('Success')
     def clear_session(self):
-        return self.call(proto.ClearSession())
+        return self.call(mapping.get_class('ClearSession')())
 
     @field('message')
-    @expect(proto.Success)
+    @expect('Success')
     def change_pin(self, remove=False):
-        ret = self.call(proto.ChangePin(remove=remove))
+        ret = self.call(mapping.get_class('ChangePin')(remove=remove))
         self.init_device()  # Re-read features
         return ret
 
-    @expect(proto.MessageSignature)
+    @expect('MessageSignature')
     def sign_message(self, coin_name, n, message):
         n = self._convert_prime(n)
         # Convert message to UTF8 NFC (seems to be a bitcoin-qt standard)
         message = normalize_nfc(message).encode("utf-8")
-        return self.call(proto.SignMessage(coin_name=coin_name, address_n=n, message=message))
+        return self.call(mapping.get_class('SignMessage')(coin_name=coin_name, address_n=n, message=message))
 
-    @expect(proto.SignedIdentity)
+    @expect('SignedIdentity')
     def sign_identity(self, identity, challenge_hidden, challenge_visual, ecdsa_curve_name=DEFAULT_CURVE):
-        return self.call(proto.SignIdentity(identity=identity, challenge_hidden=challenge_hidden, challenge_visual=challenge_visual, ecdsa_curve_name=ecdsa_curve_name))
+        return self.call(mapping.get_class('SignIdentity')(identity=identity, challenge_hidden=challenge_hidden, challenge_visual=challenge_visual, ecdsa_curve_name=ecdsa_curve_name))
 
-    @expect(proto.ECDHSessionKey)
+    @expect('ECDHSessionKey')
     def get_ecdh_session_key(self, identity, peer_public_key, ecdsa_curve_name=DEFAULT_CURVE):
-        return self.call(proto.GetECDHSessionKey(identity=identity, peer_public_key=peer_public_key, ecdsa_curve_name=ecdsa_curve_name))
+        return self.call(mapping.get_class('GetECDHSessionKey')(identity=identity, peer_public_key=peer_public_key, ecdsa_curve_name=ecdsa_curve_name))
 
     @field('message')
-    @expect(proto.Success)
+    @expect('Success')
     def set_u2f_counter(self, u2f_counter):
-        ret = self.call(proto.SetU2FCounter(u2f_counter = u2f_counter))
+        ret = self.call(mapping.get_class('SetU2FCounter')(u2f_counter = u2f_counter))
         return ret
 
     def verify_message(self, address, signature, message):
@@ -531,33 +532,33 @@ class ProtocolMixin(object):
         message = normalize_nfc(message).encode("utf-8")
         try:
             if address:
-                resp = self.call(proto.VerifyMessage(address=address, signature=signature, message=message))
+                resp = self.call(mapping.get_class('VerifyMessage')(address=address, signature=signature, message=message))
             else:
-                resp = self.call(proto.VerifyMessage(signature=signature, message=message))
+                resp = self.call(mapping.get_class('VerifyMessage')(signature=signature, message=message))
         except CallException as e:
             resp = e
-        if isinstance(resp, proto.Success):
+        if resp == mapping.get_class('Success'):
             return True
         return False
 
-    @expect(proto.EncryptedMessage)
+    @expect('EncryptedMessage')
     def encrypt_message(self, pubkey, message, display_only, coin_name, n):
         if coin_name and n:
             n = self._convert_prime(n)
-            return self.call(proto.EncryptMessage(pubkey=pubkey, message=message, display_only=display_only, coin_name=coin_name, address_n=n))
+            return self.call(mapping.get_class('EncryptMessage')(pubkey=pubkey, message=message, display_only=display_only, coin_name=coin_name, address_n=n))
         else:
-            return self.call(proto.EncryptMessage(pubkey=pubkey, message=message, display_only=display_only))
+            return self.call(mapping.get_class('EncryptMessage')(pubkey=pubkey, message=message, display_only=display_only))
 
-    @expect(proto.DecryptedMessage)
+    @expect('DecryptedMessage')
     def decrypt_message(self, n, nonce, message, msg_hmac):
         n = self._convert_prime(n)
         return self.call(proto.DecryptMessage(address_n=n, nonce=nonce, message=message, hmac=msg_hmac))
 
     @field('value')
-    @expect(proto.CipheredKeyValue)
+    @expect('CipheredKeyValue')
     def encrypt_keyvalue(self, n, key, value, ask_on_encrypt=True, ask_on_decrypt=True, iv=b''):
         n = self._convert_prime(n)
-        return self.call(proto.CipherKeyValue(address_n=n,
+        return self.call(mapping.get_class('CipherKeyValue')(address_n=n,
                                               key=key,
                                               value=value,
                                               encrypt=True,
@@ -566,10 +567,10 @@ class ProtocolMixin(object):
                                               iv=iv))
 
     @field('value')
-    @expect(proto.CipheredKeyValue)
+    @expect('CipheredKeyValue')
     def decrypt_keyvalue(self, n, key, value, ask_on_encrypt=True, ask_on_decrypt=True, iv=b''):
         n = self._convert_prime(n)
-        return self.call(proto.CipherKeyValue(address_n=n,
+        return self.call(mapping.get_class('CipherKeyValue')(address_n=n,
                                               key=key,
                                               value=value,
                                               encrypt=False,
@@ -578,17 +579,18 @@ class ProtocolMixin(object):
                                               iv=iv))
 
     @field('tx_size')
-    @expect(proto.TxSize)
+    @expect('TxSize')
     def estimate_tx_size(self, coin_name, inputs, outputs):
-        msg = proto.EstimateTxSize()
+        msg = mapping.get_class('EstimateTxSize')()
         msg.coin_name = coin_name
         msg.inputs_count = len(inputs)
         msg.outputs_count = len(outputs)
         return self.call(msg)
 
     def _prepare_simple_sign_tx(self, coin_name, inputs, outputs):
-        msg = proto.SimpleSignTx()
+        msg = mapping.get_class('SimpleSignTx')()
         msg.coin_name = coin_name
+        # FIXME: Handling nested messages
         msg.inputs.extend(inputs)
         msg.outputs.extend(outputs)
 
@@ -611,9 +613,9 @@ class ProtocolMixin(object):
         return self.call(msg).serialized.serialized_tx
 
     def _prepare_sign_tx(self, coin_name, inputs, outputs):
-        tx = types.TransactionType()
-        tx.inputs.extend(inputs)
-        tx.outputs.extend(outputs)
+        tx = mapping.get_class('TransactionType')()
+        tx.inputs = inputs
+        tx.outputs = outputs
 
         txes = {}
         txes[b''] = tx
@@ -638,7 +640,7 @@ class ProtocolMixin(object):
         txes = self._prepare_sign_tx(coin_name, inputs, outputs)
 
         # Prepare and send initial message
-        tx = proto.SignTx()
+        tx = mapping.get_class('SignTx')()
         tx.inputs_count = len(inputs)
         tx.outputs_count = len(outputs)
         tx.coin_name = coin_name
@@ -648,14 +650,17 @@ class ProtocolMixin(object):
         signatures = [None] * len(inputs)
         serialized_tx = b''
 
+        Failure = mapping.get_class('Failure')
+        TxRequest = mapping.get_class('TxRequest')
+        TxAck = mapping.get_class('TxAck')
         counter = 0
         while True:
             counter += 1
 
-            if isinstance(res, proto.Failure):
+            if res.message_type == Failure:
                 raise CallException("Signing failed")
 
-            if not isinstance(res, proto.TxRequest):
+            if res.message_type is not TxRequest:
                 raise CallException("Unexpected message")
 
             # If there's some part of signed transaction, let's add it
@@ -668,15 +673,15 @@ class ProtocolMixin(object):
                     raise Exception("Signature for index %d already filled" % res.serialized.signature_index)
                 signatures[res.serialized.signature_index] = res.serialized.signature
 
-            if res.request_type == types.TXFINISHED:
+            if res.request_type == RequestType.TXFINISHED:
                 # Device didn't ask for more information, finish workflow
                 break
 
             # Device asked for one more information, let's process it.
             current_tx = txes[res.details.tx_hash]
 
-            if res.request_type == types.TXMETA:
-                msg = types.TransactionType()
+            if res.request_type == RequestType.TXMETA:
+                msg = mapping.get_class('TransactionType')()
                 msg.version = current_tx.version
                 msg.lock_time = current_tx.lock_time
                 msg.inputs_cnt = len(current_tx.inputs)
@@ -684,21 +689,21 @@ class ProtocolMixin(object):
                     msg.outputs_cnt = len(current_tx.bin_outputs)
                 else:
                     msg.outputs_cnt = len(current_tx.outputs)
-                res = self.call(proto.TxAck(tx=msg))
+                res = self.call(TxAck(tx=msg))
                 continue
 
-            elif res.request_type == types.TXINPUT:
-                msg = types.TransactionType()
-                msg.inputs.extend([current_tx.inputs[res.details.request_index], ])
-                res = self.call(proto.TxAck(tx=msg))
+            elif res.request_type == RequestType.TXINPUT:
+                msg = mapping.get_class('TransactionType')()
+                msg.inputs = [current_tx.inputs[res.details.request_index], ]
+                res = self.call(TxAck(tx=msg))
                 continue
 
-            elif res.request_type == types.TXOUTPUT:
-                msg = types.TransactionType()
+            elif res.request_type == RequestType.TXOUTPUT:
+                msg = mapping.get_class('TransactionType')()
                 if res.details.tx_hash:
-                    msg.bin_outputs.extend([current_tx.bin_outputs[res.details.request_index], ])
+                    msg.bin_outputs = [current_tx.bin_outputs[res.details.request_index], ]
                 else:
-                    msg.outputs.extend([current_tx.outputs[res.details.request_index], ])
+                    msg.outputs = [current_tx.outputs[res.details.request_index], ]
 
                 if debug_processor != None:
                     # If debug_processor function is provided,
@@ -706,7 +711,7 @@ class ProtocolMixin(object):
                     # This is useful for unit tests, see test_msg_signtx
                     msg = debug_processor(res, msg)
 
-                res = self.call(proto.TxAck(tx=msg))
+                res = self.call(TxAck(tx=msg))
                 continue
 
         if None in signatures:
@@ -718,14 +723,14 @@ class ProtocolMixin(object):
         return (signatures, serialized_tx)
 
     @field('message')
-    @expect(proto.Success)
+    @expect('Success')
     def wipe_device(self):
-        ret = self.call(proto.WipeDevice())
+        ret = self.call(mapping.get_class('WipeDevice')())
         self.init_device()
         return ret
 
     @field('message')
-    @expect(proto.Success)
+    @expect('Success')
     def recovery_device(self, word_count, passphrase_protection, pin_protection, label, language):
         if self.features.initialized:
             raise Exception("Device is initialized already. Call wipe_device() and try again.")
@@ -733,7 +738,7 @@ class ProtocolMixin(object):
         if word_count not in (12, 18, 24):
             raise Exception("Invalid word count. Use 12/18/24")
 
-        res = self.call(proto.RecoveryDevice(word_count=int(word_count),
+        res = self.call(mapping.get_class('RecoveryDevice')(word_count=int(word_count),
                                    passphrase_protection=bool(passphrase_protection),
                                    pin_protection=bool(pin_protection),
                                    label=label,
@@ -744,14 +749,14 @@ class ProtocolMixin(object):
         return res
 
     @field('message')
-    @expect(proto.Success)
+    @expect('Success')
     @session
     def reset_device(self, display_random, strength, passphrase_protection, pin_protection, label, language):
         if self.features.initialized:
             raise Exception("Device is initialized already. Call wipe_device() and try again.")
 
         # Begin with device reset workflow
-        msg = proto.ResetDevice(display_random=display_random,
+        msg = mapping.get_class('ResetDevice')(display_random=display_random,
                                 strength=strength,
                                 language=language,
                                 passphrase_protection=bool(passphrase_protection),
@@ -759,17 +764,17 @@ class ProtocolMixin(object):
                                 label=label)
 
         resp = self.call(msg)
-        if not isinstance(resp, proto.EntropyRequest):
+        if resp is not mapping.get_class('EntropyRequest'):
             raise Exception("Invalid response, expected EntropyRequest")
 
         external_entropy = self._get_local_entropy()
         log("Computer generated entropy: " + binascii.hexlify(external_entropy).decode('ascii'))
-        ret = self.call(proto.EntropyAck(entropy=external_entropy))
+        ret = self.call(mapping.get_class('EntropyAck')(entropy=external_entropy))
         self.init_device()
         return ret
 
     @field('message')
-    @expect(proto.Success)
+    @expect('Success')
     def load_device_by_mnemonic(self, mnemonic, pin, passphrase_protection, label, language, skip_checksum=False):
         m = Mnemonic('english')
         if not skip_checksum and not m.check(mnemonic):
@@ -784,7 +789,7 @@ class ProtocolMixin(object):
         if self.features.initialized:
             raise Exception("Device is initialized already. Call wipe_device() and try again.")
 
-        resp = self.call(proto.LoadDevice(mnemonic=mnemonic, pin=pin,
+        resp = self.call(mapping.get_class('LoadDevice')(mnemonic=mnemonic, pin=pin,
                                           passphrase_protection=passphrase_protection,
                                           language=language,
                                           label=label,
@@ -793,7 +798,7 @@ class ProtocolMixin(object):
         return resp
 
     @field('message')
-    @expect(proto.Success)
+    @expect('Success')
     def load_device_by_xprv(self, xprv, pin, passphrase_protection, label, language):
         if self.features.initialized:
             raise Exception("Device is initialized already. Call wipe_device() and try again.")
@@ -804,7 +809,7 @@ class ProtocolMixin(object):
         if len(xprv) < 100 and len(xprv) > 112:
             raise Exception("Invalid length of xprv")
 
-        node = types.HDNodeType()
+        node = HDNodeType()
         data = binascii.hexlify(tools.b58decode(xprv, None))
 
         if data[90:92] != b'00':
@@ -828,7 +833,7 @@ class ProtocolMixin(object):
         node.chain_code = binascii.unhexlify(data[26:90])
         node.private_key = binascii.unhexlify(data[92:156])  # skip 0x00 indicating privkey
 
-        resp = self.call(proto.LoadDevice(node=node,
+        resp = self.call(mapping.get_class('LoadDevice')(node=node,
                                           pin=pin,
                                           passphrase_protection=passphrase_protection,
                                           language=language,
@@ -841,19 +846,19 @@ class ProtocolMixin(object):
         if self.features.bootloader_mode == False:
             raise Exception("Device must be in bootloader mode")
 
-        resp = self.call(proto.FirmwareErase())
-        if isinstance(resp, proto.Failure) and resp.code == types.Failure_FirmwareError:
+        resp = self.call(mapping.get_class('FirmwareErase')())
+        if resp == mapping.get_class('Failure') and resp.code == FailureType.FirmwareError:
             return False
 
         data = fp.read()
         fingerprint = hashlib.sha256(data[256:]).hexdigest()
         log("Firmware fingerprint: " + fingerprint)
-        resp = self.call(proto.FirmwareUpload(payload=data))
+        resp = self.call(mapping.get_class('FirmwareUpload')(payload=data))
 
-        if isinstance(resp, proto.Success):
+        if resp == mapping.get_class('Success'):
             return True
 
-        elif isinstance(resp, proto.Failure) and resp.code == types.Failure_FirmwareError:
+        elif resp == mapping.get_class('Failure') and resp.code == FailureType.FirmwareError:
             return False
 
         raise Exception("Unexpected result %s" % resp)

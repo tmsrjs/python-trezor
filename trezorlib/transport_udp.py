@@ -1,5 +1,8 @@
 '''UDP Socket implementation of Transport.'''
 
+# Port 21324 - default port used by trezor v2
+# Port 21325 - DebugLink port
+
 import socket
 from select import select
 from .transport import TransportV2, ConnectionError

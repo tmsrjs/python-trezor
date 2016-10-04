@@ -74,6 +74,7 @@ def get_transport(transport_string, path, **kwargs):
 
     if transport_string == 'udp':
         from trezorlib.transport_udp import UdpTransport
+        print(path)
         return UdpTransport(path, **kwargs)
 
     if transport_string == 'pipe':

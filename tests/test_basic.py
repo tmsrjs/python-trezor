@@ -1,17 +1,17 @@
 import unittest
 import common
 
-from trezorlib import messages_pb2 as messages
+from trezorlib import mapping
 
 class TestBasic(common.TrezorTest):
 
     def test_features(self):
-        features = self.client.call(messages.Initialize())
+        features = self.client.call(mapping.get_class('Initialize')())
         self.assertEqual(features, self.client.features)
 
     def test_ping(self):
-        ping = self.client.call(messages.Ping(message='ahoj!'))
-        self.assertEqual(ping, messages.Success(message='ahoj!'))
+        ping = self.client.call(mapping.get_class('Ping')(message='ahoj!'))
+        self.assertEqual(ping, mapping.get_class('Success')(message='ahoj!'))
 
     def test_device_id_same(self):
         id1 = self.client.get_device_id()

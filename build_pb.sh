@@ -1,8 +1,18 @@
 #!/bin/bash
 CURDIR=$(pwd)
+mkdir -p $CURDIR/pb2/
+echo > $CURDIR/pb2/__init__.py
 
-cd $CURDIR/../trezor-common/protob
+#INDEX=trezorlib/wire_types.py
+TARGET=trezorlib/messages/
+rm -f $INDEX
 
-for i in messages types ; do
-    protoc --python_out=$CURDIR/trezorlib/ -I/usr/include -I. $i.proto
+for i in types messages storage ; do
+    # Compile .proto files to python2 modules using google protobuf library
+    cd $CURDIR/../trezor-common/protob
+    protoc --python_out=$CURDIR/pb2/ -I/usr/include -I. $i.proto
+
+    # Convert google protobuf library to trezor's internal format
+    cd $CURDIR
+    ./tools/pb2py $i $TARGET
 done
