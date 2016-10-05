@@ -408,7 +408,7 @@ class ProtocolMixin(object):
         n = self._convert_prime(n)
         if not ecdsa_curve_name:
             ecdsa_curve_name=DEFAULT_CURVE
-        return self.call(proto.GetPublicKey(address_n=n, ecdsa_curve_name=ecdsa_curve_name, show_display=show_display))
+        return self.call(mapping.get_class('GetPublicKey')(address_n=n, ecdsa_curve_name=ecdsa_curve_name, show_display=show_display))
 
     @field('address')
     @expect('Address')

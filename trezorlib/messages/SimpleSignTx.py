@@ -3,6 +3,7 @@ from trezorlib import protobuf as p
 from .TxInputType import TxInputType
 from .TxOutputType import TxOutputType
 from .TransactionType import TransactionType
+
 t = p.MessageType('SimpleSignTx')
 t.wire_type = 16
 t.add_field(1, 'inputs', p.EmbeddedMessage(TxInputType), flags=p.FLAG_REPEATED)

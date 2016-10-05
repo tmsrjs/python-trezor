@@ -3,6 +3,7 @@ from trezorlib import protobuf as p
 from .TxInputType import TxInputType
 from .TxOutputBinType import TxOutputBinType
 from .TxOutputType import TxOutputType
+
 t = p.MessageType('TransactionType')
 t.add_field(1, 'version', p.UVarintType)
 t.add_field(2, 'inputs', p.EmbeddedMessage(TxInputType), flags=p.FLAG_REPEATED)
