@@ -13,5 +13,5 @@ for i in types messages storage ; do
 
     # Convert google protobuf library to trezor's internal format
     cd $CURDIR
-    ./tools/pb2py $i $TARGET 1
+    ./tools/pb2py $i $TARGET
 done
